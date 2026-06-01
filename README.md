@@ -28,7 +28,12 @@ browser (index.html) ──GET /api/data?start&end&filter──▶ app.py (Flask
 
 ## Setup
 
-1. Create a `.env` file in the project root with your Exabeam API credentials:
+1. Create a `.env` file in the project root with your Exabeam API credentials
+   (copy the template and fill in real values):
+
+   ```bash
+   cp .env.example .env
+   ```
 
    ```
    CLIENT_ID=your-client-id
@@ -68,6 +73,34 @@ Then open <http://127.0.0.1:5000> and:
 Changing any chart control re-renders instantly from the already-fetched data;
 only changing the date range or filter requires another **Fetch**.
 
+## Running with Docker
+
+The app ships with a `Dockerfile` and `docker-compose.yml`. Inside the
+container it's served by [gunicorn](https://gunicorn.org/) bound to
+`0.0.0.0:5000` (the `python app.py` dev server binds `127.0.0.1`, which isn't
+reachable from outside a container).
+
+1. Create your `.env` as in [Setup](#setup) — it's read at container start, not
+   baked into the image.
+2. Build and start:
+
+   ```bash
+   docker compose up --build
+   ```
+
+3. Open <http://localhost:5000>.
+
+Run detached and stop with:
+
+```bash
+docker compose up --build -d
+docker compose down
+```
+
+> **WSL note:** if `docker` reports it can't be found in your WSL distro, enable
+> **Settings → Resources → WSL Integration** in Docker Desktop for the distro,
+> then **Apply & Restart**.
+
 ## HTTP API
 
 - `GET /` — the web page.
@@ -99,6 +132,9 @@ range.
 | `get.py`           | Exabeam client / duration computation            |
 | `index.html`       | Web UI and Chart.js rendering                    |
 | `requirements.txt` | Python dependencies                              |
+| `Dockerfile`       | Container image (gunicorn-served)                |
+| `docker-compose.yml` | Build + run config (port, env)                 |
+| `.env.example`     | Template for the credentials file                |
 | `.env`             | Exabeam credentials (not committed)              |
 
 ## Notes
