@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Duration Threshold Graph</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  .controls { display: flex; gap: 1.5rem; align-items: end; flex-wrap: wrap; margin-bottom: 1rem; }
+  label { display: flex; flex-direction: column; font-size: .85rem; gap: .25rem; }
+  input, select, button, textarea { padding: .4rem .5rem; font-size: 1rem; font-family: inherit; }
+  button { cursor: pointer; }
+  #filter { min-width: 28rem; resize: vertical; }
+  #status { color: #666; font-size: .85rem; margin-bottom: 1rem; }
+  #status.error { color: #b91c1c; }
+  #chartWrap { position: relative; height: 70vh; }
+</style>
+</head>
+<body>
+<h1>Records with duration &gt; threshold over time</h1>
+<div class="controls">
+  <label>Start
+    <input type="datetime-local" id="start" step="1">
+  </label>
+  <label>End
+    <input type="datetime-local" id="end" step="1">
+  </label>
+  <label>Exabeam filter
+    <textarea id="filter" rows="3" placeholder="loading default…"></textarea>
+  </label>
+  <button id="fetchBtn" type="button">Fetch</button>
+</div>
+<div class="controls">
+  <label>Metric
+    <select id="metric">
+      <option value="count" selected>Count (duration &gt; threshold)</option>
+      <option value="percentile">Percentile of duration</option>
+    </select>
+  </label>
+  <label id="thresholdLabel">Threshold (ms) (duration &gt;)
+    <input type="number" id="threshold" value="0" step="any">
+  </label>
+  <label id="percentileLabel" hidden>Percentile (0–100)
+    <input type="number" id="percentile" value="95" min="0" max="100" step="any">
+  </label>
+  <label>Time bucket
+    <select id="bucket">
+      <option value="60000">1 minute</option>
+      <option value="300000" selected>5 minutes</option>
+      <option value="600000">10 minutes</option>
+      <option value="1800000">30 minutes</option>
+      <option value="3600000">1 hour</option>
+    </select>
+  </label>
+</div>
+<div id="status">Pick a date range and click Fetch.</div>
+<div id="chartWrap"><canvas id="chart"></canvas></div>
+
+<script>
+let records = []; // { time: ms, duration: number }
+let chart = null;
+
+function setStatus(msg, isError) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.classList.toggle('error', !!isError);
+}
+
+// datetime-local value (YYYY-MM-DDTHH:MM[:SS]) -> Exabeam UTC (…Z).
+// The input is treated as UTC so what you type matches the query window.
+function toExabeam(value) {
+  if (!value) return '';
+  let v = value;
+  if (v.length === 16) v += ':00'; // add seconds when step omitted them
+  return v + 'Z';
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+function toLocalInput(d) {
+  return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' +
+    pad(d.getUTCDate()) + 'T' + pad(d.getUTCHours()) + ':' +
+    pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+}
+
+async function fetchData() {
+  const start = toExabeam(document.getElementById('start').value);
+  const end = toExabeam(document.getElementById('end').value);
+  const filter = document.getElementById('filter').value.trim();
+
+  if (!start || !end) {
+    setStatus('Please set both a start and end date.', true);
+    return;
+  }
+
+  const btn = document.getElementById('fetchBtn');
+  btn.disabled = true;
+  setStatus('Querying Exabeam…');
+
+  try {
+    const params = new URLSearchParams({ start, end });
+    if (filter) params.set('filter', filter);
+    const r = await fetch('/api/data?' + params.toString());
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+    records = body.records;
+    render();
+  } catch (err) {
+    setStatus('Fetch failed: ' + err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// Linear-interpolated percentile (p in 0..100) of a sorted ascending array.
+function percentileOf(sorted, p) {
+  if (!sorted.length) return null;
+  if (sorted.length === 1) return sorted[0];
+  const rank = (p / 100) * (sorted.length - 1);
+  const lo = Math.floor(rank), hi = Math.ceil(rank);
+  if (lo === hi) return sorted[lo];
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (rank - lo);
+}
+
+function render() {
+  const metric = document.getElementById('metric').value;
+  const threshold = parseFloat(document.getElementById('threshold').value) || 0;
+  const p = Math.min(100, Math.max(0, parseFloat(document.getElementById('percentile').value) || 0));
+  const bucketMs = parseInt(document.getElementById('bucket').value, 10);
+
+  // Toggle which control is relevant for the chosen metric.
+  document.getElementById('thresholdLabel').hidden = metric !== 'count';
+  document.getElementById('percentileLabel').hidden = metric !== 'percentile';
+
+  let minTime = Infinity, maxTime = -Infinity;
+  const buckets = new Map(); // bucketStart -> count | array of durations
+  let total = 0;
+  for (const r of records) {
+    if (r.time < minTime) minTime = r.time;
+    if (r.time > maxTime) maxTime = r.time;
+    const b = Math.floor(r.time / bucketMs) * bucketMs;
+    if (metric === 'count') {
+      if (r.duration > threshold) {
+        buckets.set(b, (buckets.get(b) || 0) + 1);
+        total++;
+      }
+    } else {
+      let arr = buckets.get(b);
+      if (!arr) buckets.set(b, arr = []);
+      arr.push(r.duration);
+    }
+  }
+
+  // Build a point for every bucket across the full data time range. For count,
+  // empty buckets are 0 so the timeline isn't trimmed and gaps read as zero.
+  // For percentile, empty buckets are null (a gap) since there's no value.
+  const points = [];
+  if (records.length) {
+    const start = Math.floor(minTime / bucketMs) * bucketMs;
+    const end = Math.floor(maxTime / bucketMs) * bucketMs;
+    for (let t = start; t <= end; t += bucketMs) {
+      let y;
+      if (metric === 'count') {
+        y = buckets.get(t) || 0;
+      } else {
+        const arr = buckets.get(t);
+        y = arr ? percentileOf(arr.slice().sort((a, b) => a - b), p) : null;
+      }
+      points.push({ x: t, y });
+    }
+  }
+
+  const label = metric === 'count'
+    ? `count (duration > ${threshold})`
+    : `p${p} duration (ms)`;
+  setStatus(metric === 'count'
+    ? `${total.toLocaleString()} of ${records.length.toLocaleString()} records have duration > ${threshold}`
+    : `p${p} duration per bucket across ${records.length.toLocaleString()} records`);
+
+  const data = {
+    datasets: [{
+      label,
+      data: points,
+      borderColor: '#2563eb',
+      backgroundColor: 'rgba(37,99,235,.15)',
+      fill: metric === 'count',
+      pointRadius: 0,
+      tension: 0.1,
+      spanGaps: false,
+    }]
+  };
+
+  const yTitle = metric === 'count' ? 'record count' : 'duration (ms)';
+
+  if (chart) {
+    chart.data = data;
+    chart.options.scales.y.title.text = yTitle;
+    chart.update();
+    return;
+  }
+
+  chart = new Chart(document.getElementById('chart'), {
+    type: 'line',
+    data,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            // Show date + time on tick labels (e.g. "May 29 06:15") and the
+            // full date + time with seconds in tooltips.
+            displayFormats: {
+              millisecond: 'MMM d HH:mm:ss.SSS',
+              second: 'MMM d HH:mm:ss',
+              minute: 'MMM d HH:mm',
+              hour: 'MMM d HH:mm',
+              day: 'MMM d',
+              week: 'MMM d',
+              month: 'MMM yyyy',
+              quarter: 'MMM yyyy',
+              year: 'yyyy',
+            },
+            tooltipFormat: 'MMM d, yyyy HH:mm:ss',
+          },
+          title: { display: true, text: 'date / time' },
+        },
+        y: { beginAtZero: true, title: { display: true, text: yTitle } }
+      }
+    }
+  });
+}
+
+// Default the range to the last 5 hours (matching the old get.py default).
+(function initDates() {
+  const now = new Date();
+  const start = new Date(now.getTime() - 5 * 3600 * 1000);
+  document.getElementById('end').value = toLocalInput(now);
+  document.getElementById('start').value = toLocalInput(start);
+})();
+
+// Pre-fill the filter input with the server's default.
+fetch('/api/default-filter')
+  .then(r => r.json())
+  .then(b => { document.getElementById('filter').value = b.filter; })
+  .catch(() => { document.getElementById('filter').placeholder = 'enter Exabeam filter'; });
+
+document.getElementById('fetchBtn').addEventListener('click', fetchData);
+document.getElementById('threshold').addEventListener('input', render);
+document.getElementById('percentile').addEventListener('input', render);
+document.getElementById('metric').addEventListener('change', render);
+document.getElementById('bucket').addEventListener('change', render);
+</script>
+</body>
+</html>
