@@ -17,6 +17,7 @@
   #status { color: #666; font-size: .85rem; margin-bottom: 1rem; }
   #status.error { color: #b91c1c; }
   #chartWrap { position: relative; height: 70vh; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
@@ -115,6 +116,12 @@ async function fetchData() {
   }
 }
 
+function updateMetricControls() {
+  const metric = document.getElementById('metric').value;
+  document.getElementById('thresholdLabel').hidden = metric !== 'count';
+  document.getElementById('percentileLabel').hidden = metric !== 'percentile';
+}
+
 // Linear-interpolated percentile (p in 0..100) of a sorted ascending array.
 function percentileOf(sorted, p) {
   if (!sorted.length) return null;
@@ -131,9 +138,7 @@ function render() {
   const p = Math.min(100, Math.max(0, parseFloat(document.getElementById('percentile').value) || 0));
   const bucketMs = parseInt(document.getElementById('bucket').value, 10);
 
-  // Toggle which control is relevant for the chosen metric.
-  document.getElementById('thresholdLabel').hidden = metric !== 'count';
-  document.getElementById('percentileLabel').hidden = metric !== 'percentile';
+  updateMetricControls();
 
   let minTime = Infinity, maxTime = -Infinity;
   const buckets = new Map(); // bucketStart -> count | array of durations
@@ -252,7 +257,7 @@ fetch('api/default-filter')
 document.getElementById('fetchBtn').addEventListener('click', fetchData);
 document.getElementById('threshold').addEventListener('input', render);
 document.getElementById('percentile').addEventListener('input', render);
-document.getElementById('metric').addEventListener('change', render);
+document.getElementById('metric').addEventListener('change', () => { updateMetricControls(); if (records.length) render(); });
 document.getElementById('bucket').addEventListener('change', render);
 </script>
 </body>
