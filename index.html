@@ -23,10 +23,10 @@
 <body>
 <h1>Records with duration &gt; threshold over time</h1>
 <div class="controls">
-  <label>Start
+  <label>Start (CR time)
     <input type="datetime-local" id="start" step="1">
   </label>
-  <label>End
+  <label>End (CR time)
     <input type="datetime-local" id="end" step="1">
   </label>
   <label>Exabeam filter
@@ -70,21 +70,30 @@ function setStatus(msg, isError) {
   el.classList.toggle('error', !!isError);
 }
 
+// Costa Rica is UTC−6 year-round (no DST).
+const CR_OFFSET_MS = 6 * 3600 * 1000;
+
 // datetime-local value (YYYY-MM-DDTHH:MM[:SS]) -> Exabeam UTC (…Z).
-// The input is treated as UTC so what you type matches the query window.
+// Input is interpreted as Costa Rica time (UTC−6); add 6 h to get UTC.
 function toExabeam(value) {
   if (!value) return '';
   let v = value;
-  if (v.length === 16) v += ':00'; // add seconds when step omitted them
-  return v + 'Z';
+  if (v.length === 16) v += ':00';
+  const utcMs = new Date(v + 'Z').getTime() + CR_OFFSET_MS;
+  const d = new Date(utcMs);
+  return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' +
+    pad(d.getUTCDate()) + 'T' + pad(d.getUTCHours()) + ':' +
+    pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds()) + 'Z';
 }
 
 function pad(n) { return String(n).padStart(2, '0'); }
 
 function toLocalInput(d) {
-  return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' +
-    pad(d.getUTCDate()) + 'T' + pad(d.getUTCHours()) + ':' +
-    pad(d.getUTCMinutes()) + ':' + pad(d.getUTCSeconds());
+  // Shift UTC back 6 h to show Costa Rica local time in the inputs.
+  const cr = new Date(d.getTime() - CR_OFFSET_MS);
+  return cr.getUTCFullYear() + '-' + pad(cr.getUTCMonth() + 1) + '-' +
+    pad(cr.getUTCDate()) + 'T' + pad(cr.getUTCHours()) + ':' +
+    pad(cr.getUTCMinutes()) + ':' + pad(cr.getUTCSeconds());
 }
 
 async function fetchData() {
